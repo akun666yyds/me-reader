@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' file: data: https: http:;" />
+  <title>MeReader-Lite</title>
+  <link rel="stylesheet" href="../../node_modules/@highlightjs/cdn-assets/styles/github.min.css" id="hljs-light" />
+  <link rel="stylesheet" href="../../node_modules/@highlightjs/cdn-assets/styles/github-dark.min.css" id="hljs-dark" disabled />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="markdown.css" />
+</head>
+<body data-theme="light" data-mode="preview">
+  <div id="app">
+    <nav id="tabbar">
+      <div id="tabs"></div>
+      <button id="btn-new-tab" title="新建标签页 (Ctrl+T)">＋</button>
+    </nav>
+    <header id="toolbar">
+      <div class="tool-group">
+        <button id="btn-open" class="tool-btn" title="打开 (Ctrl+O)">打开</button>
+        <button id="btn-save" class="tool-btn" title="保存 (Ctrl+S)">保存</button>
+      </div>
+      <div class="tool-group" id="mode-switch">
+        <button class="mode-btn" data-mode="edit" title="编辑模式 (Ctrl+3)">编辑</button>
+        <button class="mode-btn" data-mode="split" title="分屏模式 (Ctrl+2)">分屏</button>
+        <button class="mode-btn" data-mode="preview" title="预览模式 (Ctrl+1)">预览</button>
+      </div>
+      <div class="tool-group">
+        <button id="btn-zoom-out" class="tool-btn" title="缩小 (Ctrl+-)">−</button>
+        <span id="zoom-label">100%</span>
+        <button id="btn-zoom-in" class="tool-btn" title="放大 (Ctrl++)">＋</button>
+      </div>
+    </header>
+
+    <main id="content">
+      <section id="editor-pane">
+        <textarea id="editor" spellcheck="false" placeholder="在此输入 Markdown …"></textarea>
+      </section>
+      <div id="splitter"></div>
+      <section id="preview-pane">
+        <article id="preview" class="markdown-body"></article>
+      </section>
+    </main>
+
+    <footer id="statusbar">
+      <span id="status-position">行 1，列 1</span>
+      <span id="status-count">0 字</span>
+      <span class="spacer"></span>
+      <span id="status-file">未命名</span>
+      <span id="status-dirty"></span>
+    </footer>
+  </div>
+
+  <div id="drop-overlay">松开以打开文件</div>
+  <div id="tab-context-menu" class="context-menu"></div>
+
+  <script src="../../node_modules/marked/marked.min.js"></script>
+  <script src="../../node_modules/dompurify/dist/purify.min.js"></script>
+  <script src="../../node_modules/@highlightjs/cdn-assets/highlight.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

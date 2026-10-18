@@ -2,8 +2,14 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron')
 const path = require('path');
 const fs = require('fs');
 
-const APP_NAME = 'MeReader-Lite';
+const APP_NAME = 'MeReader';
 const ICON_PATH = path.join(__dirname, '..', '..', 'assets', 'icon.png');
+
+const { DataPaths, migrateLegacyUserData } = require('./agent/paths');
+const { Workspace } = require('./agent/workspace');
+const { SessionStore } = require('./agent/sessions');
+const { AgentEngine } = require('./agent/engine');
+const { registerAgentIpc } = require('./agent/ipc');
 
 const DEFAULT_SETTINGS = {
   theme: 'light',
@@ -12,7 +18,9 @@ const DEFAULT_SETTINGS = {
   lineHeight: 1.8,
   viewMode: 'preview',
   zoom: 1,
-  recentFiles: []
+  recentFiles: [],
+  agentPanelOpen: false,
+  fileTreeOpen: true
 };
 
 const FONT_OPTIONS = [
@@ -34,6 +42,17 @@ const THEME_OPTIONS = [
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 const autosaveFile = () => path.join(app.getPath('userData'), 'autosave.json');
 
+// 改名之后数据目录固定为 %APPDATA%/MeReader，并把旧目录（mereader-lite / MeReader-Lite）里的
+// 设置与自动保存快照复制过来。只在目标不存在时复制，绝不动源数据。
+app.setName(APP_NAME);
+try {
+  const appData = app.getPath('appData');
+  migrateLegacyUserData(appData, APP_NAME);
+  app.setPath('userData', path.join(appData, APP_NAME));
+} catch (err) {
+  console.warn('[MeReader] 数据目录准备失败，使用默认位置：', err.message);
+}
+
 function samePath(a, b) {
   return path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 }
@@ -41,6 +60,20 @@ function samePath(a, b) {
 let settings = { ...DEFAULT_SETTINGS };
 let win = null;
 let forceClose = false;
+let paths = null;
+let workspace = null;
+let sessions = null;
+let engine = null;
+
+/** agent 面板要能像 IDE 一样开关，状态跟着界面设置走 */
+function agentStateSnapshot() {
+  return {
+    config: engine ? engine.getConfig() : null,
+    workspace: { projects: workspace ? workspace.list() : [], activeId: workspace ? workspace.activeId() : null },
+    panelOpen: !!settings.agentPanelOpen,
+    fileTreeOpen: settings.fileTreeOpen !== false
+  };
+}
 
 function loadSettings() {
   try {
@@ -109,6 +142,26 @@ function initialFileArg() {
   return null;
 }
 
+/** 命令行直接给目录 = 把它当项目打开（MeReader.exe D:\我的文档项目） */
+function initialProjectArg() {
+  // Electron 里 argv[1] 常常是应用自身路径（或测试入口脚本），必须排掉，否则会把程序目录当成项目
+  const skip = new Set([
+    path.resolve(app.getAppPath() || ''),
+    path.resolve(process.argv[1] || ''),
+    path.resolve(process.execPath || ''),
+    path.resolve(__dirname)
+  ]);
+  const args = process.argv.slice(1).filter((a) => !a.startsWith('-'));
+  for (const a of args) {
+    try {
+      const abs = path.resolve(a);
+      if (skip.has(abs)) continue;
+      if (fs.existsSync(abs) && fs.statSync(abs).isDirectory()) return abs;
+    } catch {}
+  }
+  return null;
+}
+
 function openPathFromMain(filePath) {
   sendToWindow('file:open-path', filePath);
 }
@@ -131,6 +184,7 @@ function buildMenu() {
         { label: '新建标签页', accelerator: 'CmdOrCtrl+T', click: () => send('new-tab') },
         { label: '打开...', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
         { type: 'separator' },
+        { label: '添加项目文件夹...', accelerator: 'CmdOrCtrl+Shift+O', click: () => send('add-project') },
         { label: '保存', accelerator: 'CmdOrCtrl+S', click: () => send('save') },
         { label: '另存为...', accelerator: 'CmdOrCtrl+Shift+S', click: () => send('saveAs') },
         { label: '关闭标签页', accelerator: 'CmdOrCtrl+W', click: () => send('close-tab') },
@@ -159,6 +213,21 @@ function buildMenu() {
         { label: '预览模式', accelerator: 'CmdOrCtrl+1', click: () => send('mode', 'preview') },
         { label: '分屏模式', accelerator: 'CmdOrCtrl+2', click: () => send('mode', 'split') },
         { label: '编辑模式', accelerator: 'CmdOrCtrl+3', click: () => send('mode', 'edit') },
+        { type: 'separator' },
+        {
+          label: '文件树',
+          type: 'checkbox',
+          checked: settings.fileTreeOpen !== false,
+          accelerator: 'CmdOrCtrl+Shift+E',
+          click: () => togglePanel('fileTreeOpen')
+        },
+        {
+          label: 'Ollab 助手面板',
+          type: 'checkbox',
+          checked: !!settings.agentPanelOpen,
+          accelerator: 'CmdOrCtrl+Shift+A',
+          click: () => togglePanel('agentPanelOpen')
+        },
         { type: 'separator' },
         { label: '放大', accelerator: 'CmdOrCtrl+Plus', click: () => changeZoom(0.1) },
         { label: '缩小', accelerator: 'CmdOrCtrl+-', click: () => changeZoom(-0.1) },
@@ -211,7 +280,8 @@ function buildMenu() {
     {
       label: '帮助',
       submenu: [
-        { label: '关于 MeReader-Lite', click: () => showAbout() },
+        { label: `关于 ${APP_NAME}`, click: () => showAbout() },
+        { label: 'Ollab 使用说明', click: () => send('agent-help') },
         { label: 'Markdown 语法参考', click: () => shell.openExternal('https://www.markdownguide.org/basic-syntax/') }
       ]
     }
@@ -228,6 +298,13 @@ function updateSettings(patch) {
   sendToWindow('settings:changed', settings);
 }
 
+/** 面板开关只改设置并让渲染层自己收拢布局，避免主进程持有界面状态 */
+function togglePanel(key) {
+  const next = !settings[key];
+  if (win && !win.isDestroyed()) sendToWindow('menu:action', { action: 'toggle-panel', payload: { key, value: next } });
+  updateSettings({ [key]: next });
+}
+
 function changeZoom(delta) {
   setZoom(Math.round((settings.zoom + delta) * 10) / 10);
 }
@@ -241,17 +318,17 @@ function showAbout() {
     type: 'info',
     title: '关于',
     message: `${APP_NAME} v${app.getVersion()}`,
-    detail: `轻量级 Markdown 阅读器与编辑器\n\n版权所有：啊坤\n联系邮箱：akun666yyds@gmail.com`,
+    detail: `本地 Markdown 读写工具，内置 Ollama 驱动的 Ollab 助手\n\n版权所有：啊坤\n联系邮箱：akun666yyds@gmail.com\n数据目录：${app.getPath('userData')}`,
     buttons: ['确定']
   });
 }
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1180,
-    height: 800,
-    minWidth: 640,
-    minHeight: 420,
+    width: 1440,
+    height: 860,
+    minWidth: 900,
+    minHeight: 480,
     icon: ICON_PATH,
     show: false,
     backgroundColor: '#ffffff',
@@ -287,8 +364,12 @@ function createWindow() {
 ipcMain.handle('app:get-state', () => ({
   settings,
   version: app.getVersion(),
+  appName: APP_NAME,
+  dataDir: app.getPath('userData'),
   initialFile: initialFileArg(),
-  recovery: readAutosave()
+  initialProject: initialProjectArg(),
+  recovery: readAutosave(),
+  agent: agentStateSnapshot()
 }));
 
 ipcMain.handle('file:read', (_e, filePath) => {
@@ -321,8 +402,22 @@ ipcMain.handle('file:save-dialog', async (_e, defaultName) => {
 ipcMain.handle('file:write', (_e, { filePath, content }) => {
   fs.writeFileSync(filePath, content.replace(/\n/g, '\r\n'), 'utf8');
   addRecent(filePath);
+  queueIndexForFile(filePath);
   return true;
 });
+
+/** 用户在编辑器里保存的文件同样进入增量索引队列 */
+function queueIndexForFile(filePath) {
+  if (!engine || !workspace) return;
+  try {
+    const target = String(filePath || '');
+    const project = workspace.list().find((p) => path.resolve(target).toLowerCase().startsWith(path.resolve(p.root).toLowerCase() + path.sep));
+    if (!project) return;
+    engine.scheduleIndex(project.id, path.relative(project.root, target).replace(/\\/g, '/'));
+  } catch (err) {
+    console.warn('[MeReader] 索引排队跳过：', err.message);
+  }
+}
 
 ipcMain.handle('dialog:confirm-close', async (_e, name) => {
   const r = await dialog.showMessageBox(win, {
@@ -393,6 +488,40 @@ ipcMain.handle('file:reveal', (_e, filePath) => {
   if (filePath && fs.existsSync(filePath)) shell.showItemInFolder(filePath);
 });
 
+/** agent 回答里的来源链接：只放行 http/https，交给系统浏览器 */
+ipcMain.handle('app:open-external', (_e, url) => {
+  const s = String(url || '');
+  if (!/^https?:\/\//i.test(s)) return { ok: false, error: '只允许打开 http/https 链接' };
+  shell.openExternal(s);
+  return { ok: true };
+});
+
+/**
+ * agent 装配顺序：路径 → 工作区 → 会话 → 引擎 → IPC。
+ * 全部同步 IO，失败只降级（不启动 agent），不能让阅读器本体打不开。
+ */
+function initAgent() {
+  try {
+    paths = new DataPaths(app.getPath('userData')).init();
+    workspace = new Workspace({ registryFile: path.join(paths.agentDir, 'projects.json') });
+    sessions = new SessionStore({ paths });
+    engine = new AgentEngine({
+      paths,
+      workspace,
+      sessions,
+      shell,
+      send: (channel, payload) => sendToWindow(channel, payload)
+    });
+    engine.prepareSkills();
+    registerAgentIpc({ ipcMain, paths, engine, workspace, sessions, sendToWindow, getWindow: () => win });
+    return true;
+  } catch (err) {
+    console.error('[MeReader] agent 初始化失败：', err);
+    engine = null;
+    return false;
+  }
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -404,16 +533,26 @@ if (!gotLock) {
     }
     const args = argv.slice(1).filter((a) => !a.startsWith('-'));
     for (const a of args) {
+      const abs = path.resolve(a);
       if (/\.(md|markdown|txt|mdown|mkd)$/i.test(a) && fs.existsSync(a)) {
-        openPathFromMain(path.resolve(a));
+        openPathFromMain(abs);
         break;
       }
+      try {
+        if (fs.existsSync(a) && fs.statSync(a).isDirectory() && engine) {
+          const project = workspace.add(abs);
+          workspace.setActive(project.id);
+          sendToWindow('project:added', project);
+          break;
+        }
+      } catch {}
     }
   });
 
   app.whenReady().then(() => {
-    app.setAppUserModelId('com.akun.mereader-lite');
+    app.setAppUserModelId('com.akun.mereader');
     loadSettings();
+    initAgent();
     buildMenu();
     createWindow();
     app.on('activate', () => {

@@ -1,8 +1,8 @@
 {
-  "name": "mereader-lite",
-  "productName": "MeReader-Lite",
-  "version": "1.0.0",
-  "description": "轻量级 Markdown 阅读器与编辑器",
+  "name": "mereader",
+  "productName": "MeReader",
+  "version": "1.1.0",
+  "description": "本地 Markdown 读写工具，内置 Ollama 驱动的 Ollab 助手",
   "author": "啊坤 <akun666yyds@gmail.com>",
   "copyright": "Copyright © 2026 啊坤",
   "license": "MIT",
@@ -10,11 +10,16 @@
   "scripts": {
     "start": "electron .",
     "icon": "node scripts/build-icon.js",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win",
+    "test": "node scripts/selftest-workspace.js && node scripts/selftest-markdown.js && node scripts/selftest-engine.js",
+    "test:agent": "node scripts/selftest-engine.js",
+    "test:e2e": "node scripts/e2e-ollama.js",
+    "smoke": "electron scripts/smoke.js",
+    "screenshot": "electron scripts/screenshot.js"
   },
   "build": {
-    "appId": "com.akun.mereader-lite",
-    "productName": "MeReader-Lite",
+    "appId": "com.akun.mereader",
+    "productName": "MeReader",
     "copyright": "Copyright © 2026 啊坤",
     "directories": {
       "output": "dist"

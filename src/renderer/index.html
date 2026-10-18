@@ -4,60 +4,172 @@
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' file: data: https: http:;" />
-  <title>MeReader-Lite</title>
+  <title>MeReader</title>
   <link rel="stylesheet" href="../../node_modules/@highlightjs/cdn-assets/styles/github.min.css" id="hljs-light" />
   <link rel="stylesheet" href="../../node_modules/@highlightjs/cdn-assets/styles/github-dark.min.css" id="hljs-dark" disabled />
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="markdown.css" />
+  <link rel="stylesheet" href="agent.css" />
 </head>
-<body data-theme="light" data-mode="preview">
-  <div id="app">
-    <nav id="tabbar">
-      <div id="tabs"></div>
-      <button id="btn-new-tab" title="新建标签页 (Ctrl+T)">＋</button>
-    </nav>
-    <header id="toolbar">
-      <div class="tool-group">
-        <button id="btn-open" class="tool-btn" title="打开 (Ctrl+O)">打开</button>
-        <button id="btn-save" class="tool-btn" title="保存 (Ctrl+S)">保存</button>
+<body data-theme="light" data-mode="preview" data-tree="on" data-agent="off">
+  <div id="shell">
+    <!-- 左侧：项目文件树（每个根目录 = 一个项目文件夹） -->
+    <aside id="sidebar">
+      <div id="tree-header">
+        <span class="tree-title">项目</span>
+        <button id="tree-add" class="icon-btn" title="添加项目文件夹 (Ctrl+Shift+O)">＋</button>
+        <button id="tree-refresh" class="icon-btn" title="刷新文件树">⟳</button>
       </div>
-      <div class="tool-group" id="mode-switch">
-        <button class="mode-btn" data-mode="edit" title="编辑模式 (Ctrl+3)">编辑</button>
-        <button class="mode-btn" data-mode="split" title="分屏模式 (Ctrl+2)">分屏</button>
-        <button class="mode-btn" data-mode="preview" title="预览模式 (Ctrl+1)">预览</button>
-      </div>
-      <div class="tool-group">
-        <button id="btn-zoom-out" class="tool-btn" title="缩小 (Ctrl+-)">−</button>
-        <span id="zoom-label">100%</span>
-        <button id="btn-zoom-in" class="tool-btn" title="放大 (Ctrl++)">＋</button>
-      </div>
-    </header>
+      <div id="tree-body"></div>
+      <div id="tree-hint">还没有项目：点上面的 ＋ 选择一个文件夹，Ollab 只在项目目录内工作。</div>
+      <div id="tree-status"></div>
+    </aside>
+    <div id="vs-tree" class="vsplitter"></div>
 
-    <main id="content">
-      <section id="editor-pane">
-        <textarea id="editor" spellcheck="false" placeholder="在此输入 Markdown …"></textarea>
-      </section>
-      <div id="splitter"></div>
-      <section id="preview-pane">
-        <article id="preview" class="markdown-body"></article>
-      </section>
-    </main>
+    <div id="app">
+      <nav id="tabbar">
+        <div id="tabs"></div>
+        <button id="btn-new-tab" title="新建标签页 (Ctrl+T)">＋</button>
+      </nav>
+      <header id="toolbar">
+        <div class="tool-group">
+          <button id="btn-open" class="tool-btn" title="打开 (Ctrl+O)">打开</button>
+          <button id="btn-save" class="tool-btn" title="保存 (Ctrl+S)">保存</button>
+        </div>
+        <div class="tool-group" id="mode-switch">
+          <button class="mode-btn" data-mode="edit" title="编辑模式 (Ctrl+3)">编辑</button>
+          <button class="mode-btn" data-mode="split" title="分屏模式 (Ctrl+2)">分屏</button>
+          <button class="mode-btn" data-mode="preview" title="预览模式 (Ctrl+1)">预览</button>
+        </div>
+        <div class="tool-group" id="zoom-group">
+          <button id="btn-zoom-out" class="tool-btn" title="缩小 (Ctrl+-)">−</button>
+          <span id="zoom-label">100%</span>
+          <button id="btn-zoom-in" class="tool-btn" title="放大 (Ctrl++)">＋</button>
+        </div>
+        <div class="tool-group" id="panel-switch">
+          <button id="btn-toggle-tree" class="tool-btn" title="文件树 (Ctrl+Shift+E)">文件树</button>
+          <button id="btn-toggle-agent" class="tool-btn" title="Ollab 助手 (Ctrl+Shift+A)">Ollab</button>
+        </div>
+      </header>
 
-    <footer id="statusbar">
-      <span id="status-position">行 1，列 1</span>
-      <span id="status-count">0 字</span>
-      <span class="spacer"></span>
-      <span id="status-file">未命名</span>
-      <span id="status-dirty"></span>
-    </footer>
+      <main id="content">
+        <section id="editor-pane">
+          <textarea id="editor" spellcheck="false" placeholder="在此输入 Markdown …"></textarea>
+        </section>
+        <div id="splitter"></div>
+        <section id="preview-pane">
+          <article id="preview" class="markdown-body"></article>
+        </section>
+      </main>
+
+      <footer id="statusbar">
+        <span id="status-position">行 1，列 1</span>
+        <span id="status-count">0 字</span>
+        <span class="spacer"></span>
+        <span id="status-agent"></span>
+        <span id="status-file">未命名</span>
+        <span id="status-dirty"></span>
+      </footer>
+    </div>
+
+    <div id="vs-agent" class="vsplitter"></div>
+    <!-- 右侧：Ollab agent 面板 -->
+    <aside id="agent-panel">
+      <div id="ag-head">
+        <span class="ag-dot" id="ag-conn-dot" title="Ollama 连接状态"></span>
+        <strong>Ollab 助手</strong>
+        <span id="ag-model" class="ag-model" title="当前模型">未选择模型</span>
+        <button id="ag-close" class="icon-btn" title="关闭面板 (Ctrl+Shift+A)">×</button>
+      </div>
+      <nav id="ag-tabs">
+        <button class="ag-tab active" data-tab="chat">对话</button>
+        <button class="ag-tab" data-tab="context">上下文</button>
+        <button class="ag-tab" data-tab="memory">记忆</button>
+        <button class="ag-tab" data-tab="skills">技能</button>
+        <button class="ag-tab" data-tab="settings">设置</button>
+      </nav>
+
+      <section class="ag-page active" data-page="chat">
+        <div id="ag-session-bar">
+          <select id="ag-session" title="切换会话"></select>
+          <button id="ag-new-session" class="icon-btn" title="新建会话">＋</button>
+          <button id="ag-approval" class="pill" data-mode="confirm" title="工具写入的审批策略">需要确认</button>
+          <button id="ag-export" class="icon-btn" title="导出为 Markdown">⇩</button>
+        </div>
+        <div id="ag-plan" class="ag-plan" hidden></div>
+        <div id="ag-messages"></div>
+        <div id="ag-usage">
+          <div class="usage-line">
+            <span id="usage-label">上下文 0%</span>
+            <span class="spacer"></span>
+            <button id="ag-compress" class="mini-btn" title="立即压缩历史（保留摘要）">压缩</button>
+          </div>
+          <div class="usage-bar"><i id="usage-fill"></i></div>
+        </div>
+        <div id="ag-attach" hidden></div>
+        <div id="ag-composer">
+          <textarea id="ag-input" placeholder="让 Ollab 做点什么…（Ctrl+Enter 发送，可直接粘贴图片）"></textarea>
+          <div id="ag-composer-row">
+            <button id="ag-attach-btn" class="icon-btn" title="添加图片">🖼</button>
+            <input type="file" id="ag-file" accept="image/*" multiple hidden />
+            <span class="spacer"></span>
+            <button id="ag-stop" class="tool-btn" hidden>停止</button>
+            <button id="ag-send" class="primary">发送</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="ag-page" data-page="context">
+        <div id="ctx-summary" class="ctx-card"></div>
+        <div id="ctx-detail" class="ctx-list"></div>
+      </section>
+
+      <section class="ag-page" data-page="memory">
+        <div id="mem-bar">
+          <select id="mem-scope">
+            <option value="project">项目记忆（.omemory）</option>
+            <option value="global">全局记忆</option>
+          </select>
+          <button id="mem-add" class="icon-btn" title="新增记忆">＋</button>
+        </div>
+        <div id="mem-list" class="mem-list"></div>
+      </section>
+
+      <section class="ag-page" data-page="skills">
+        <div id="skill-bar">
+          <span class="muted">系统技能服务于文档整理、数据文档、H5 项目与联网检索</span>
+          <button id="skill-refresh" class="icon-btn" title="刷新">⟳</button>
+        </div>
+        <div id="skill-list" class="skill-list"></div>
+      </section>
+
+      <section class="ag-page" data-page="settings">
+        <div id="set-body"></div>
+      </section>
+    </aside>
   </div>
 
   <div id="drop-overlay">松开以打开文件</div>
   <div id="tab-context-menu" class="context-menu"></div>
+  <div id="tree-context-menu" class="context-menu"></div>
+  <div id="ui-modal" class="ui-modal">
+    <div class="ui-modal-box">
+      <div class="ui-modal-title" id="modal-title"></div>
+      <div class="ui-modal-body" id="modal-body"></div>
+      <div class="ui-modal-actions">
+        <button id="modal-cancel" class="tool-btn">取消</button>
+        <button id="modal-ok" class="tool-btn primary">确定</button>
+      </div>
+    </div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
 
   <script src="../../node_modules/marked/marked.min.js"></script>
   <script src="../../node_modules/dompurify/dist/purify.min.js"></script>
   <script src="../../node_modules/@highlightjs/cdn-assets/highlight.min.js"></script>
+  <script src="ui.js"></script>
+  <script src="filetree.js"></script>
+  <script src="agent.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

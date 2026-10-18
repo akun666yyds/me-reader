@@ -74,9 +74,10 @@
 
   function updateTitle() {
     const d = active();
-    document.title = `${d && isDirty(d) ? '● ' : ''}${d ? d.name : 'MeReader-Lite'} - MeReader-Lite`;
+    document.title = `${d && isDirty(d) ? '● ' : ''}${d ? d.name : 'MeReader'} - MeReader`;
     els.statusFile.textContent = d ? (d.filePath || '未保存的副本') : '';
     els.statusDirty.textContent = d && isDirty(d) ? '未保存' : '';
+    notifyEditorChanged();
   }
 
   function updateStatus() {
@@ -382,6 +383,107 @@
     activeId = docs[Math.min(snap.activeIndex || 0, docs.length - 1)].id;
   }
 
+  // ---------- 与文件树 / agent 面板的联动 ----------
+
+  /** 当前编辑位置与选区：agent 需要知道用户正盯着哪一段 */
+  function notifyEditorChanged() {
+    const d = active();
+    document.dispatchEvent(new CustomEvent('mr:doc-changed', {
+      detail: {
+        filePath: d ? d.filePath : null,
+        name: d ? d.name : '',
+        selection: els.editor ? els.editor.value.slice(els.editor.selectionStart, els.editor.selectionEnd) : ''
+      }
+    }));
+  }
+
+  function insertAtCursor(text) {
+    if (!text) return;
+    const d = active();
+    if (!d) return;
+    const start = els.editor.selectionStart;
+    const end = els.editor.selectionEnd;
+    d.text = `${d.text.slice(0, start)}${text}${d.text.slice(end)}`;
+    els.editor.value = d.text;
+    els.editor.selectionStart = els.editor.selectionEnd = start + text.length;
+    updateTitle();
+    renderTabs();
+    scheduleRender();
+    scheduleAutosave();
+    els.editor.focus();
+  }
+
+  /** agent 改了正在编辑的文件：未改动过就直接同步磁盘内容，改过则只提示，绝不覆盖用户输入 */
+  async function syncExternalChange(rel) {
+    const d = active();
+    if (!d || !d.filePath) return;
+    const norm = (p) => String(p).replace(/\\/g, '/');
+    if (!rel || !norm(d.filePath).toLowerCase().endsWith(norm(rel).toLowerCase())) return;
+    if (isDirty(d)) {
+      window.MRUI.toast(`Ollab 更新了 ${d.name}，你有未保存修改，已保留你的版本`, 4200);
+      return;
+    }
+    try {
+      const { content } = await api.readFile(d.filePath);
+      d.text = content;
+      d.saved = content;
+      loadEditor();
+    } catch (err) {
+      await api.confirm({ title: '文件已被外部修改', message: `无法重新读取：\n${d.filePath}\n\n${err.message || err}`, buttons: ['确定'] });
+    }
+  }
+
+  document.addEventListener('mr:open-file', (e) => e.detail && openPath(e.detail));
+  document.addEventListener('mr:insert-text', (e) => insertAtCursor(e.detail));
+  document.addEventListener('mr:file-changed-externally', (e) => syncExternalChange((e.detail || {}).rel));
+  document.addEventListener('mr:file-deleted', (e) => {
+    const d = active();
+    const rel = (e.detail || {}).rel;
+    if (d && d.filePath && rel && String(d.filePath).replace(/\\/g, '/').toLowerCase().endsWith(String(rel).toLowerCase())) {
+      closeTab(d.id);
+    }
+  });
+
+  // ---------- 面板开关与拖拽宽度 ----------
+
+  function applyPanelSettings(s) {
+    els.body.dataset.tree = s.fileTreeOpen === false ? 'off' : 'on';
+    els.body.dataset.agent = s.agentPanelOpen ? 'on' : 'off';
+    document.querySelectorAll('#panel-switch .tool-btn').forEach((b) => {
+      const key = b.id === 'btn-toggle-agent' ? 'agentPanelOpen' : 'fileTreeOpen';
+      b.classList.toggle('active', !!s[key]);
+    });
+    if (s.agentPanelOpen && window.MeReaderAgent) window.MeReaderAgent.setPanelOpen(true);
+  }
+
+  function togglePanel(key) {
+    api.setSettings({ [key]: !settings[key] });
+  }
+
+  (function initVSplitters() {
+    const setup = (handleId, targetId, dir, min, max) => {
+      const handle = $(handleId);
+      const target = $(targetId);
+      if (!handle || !target) return;
+      let dragging = false;
+      handle.addEventListener('pointerdown', (e) => {
+        dragging = true;
+        handle.setPointerCapture(e.pointerId);
+      });
+      handle.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const w = dir === 'left' ? e.clientX : window.innerWidth - e.clientX;
+        target.style.flexBasis = `${Math.min(max, Math.max(min, w))}px`;
+      });
+      handle.addEventListener('pointerup', (e) => {
+        dragging = false;
+        handle.releasePointerCapture(e.pointerId);
+      });
+    };
+    setup('vs-tree', 'sidebar', 'left', 150, 520);
+    setup('vs-agent', 'agent-panel', 'right', 300, 760);
+  })();
+
   // ---------- 视图与设置 ----------
 
   function setMode(mode, persist = true) {
@@ -404,6 +506,7 @@
     $('hljs-dark').disabled = !dark;
     els.zoomLabel.textContent = Math.round(s.zoom * 100) + '%';
     setMode(s.viewMode, false);
+    applyPanelSettings(s);
   }
 
   // ---------- 分屏滚动同步 ----------
@@ -492,6 +595,16 @@
     const file = e.dataTransfer.files && e.dataTransfer.files[0];
     if (!file) return;
     const p = api.pathForFile(file);
+    if (/\.(png|jpe?g|gif|bmp|webp|ico|avif|svg)$/i.test(p)) {
+      // 图片：面板开着就作为上下文附件，否则导入当前项目并插入引用
+      if (window.MeReaderAgent && window.MeReaderAgent.isOpen()) {
+        window.MeReaderAgent.attachFiles([file]);
+        window.MRUI.toast('图片已作为上下文附件加入输入区');
+      } else if (window.MeReaderTree) {
+        window.MeReaderTree.importIntoProject(file);
+      }
+      return;
+    }
     if (/\.(md|markdown|txt|mdown|mkd)$/i.test(p)) await openPath(p);
   });
 
@@ -507,8 +620,8 @@
     scheduleRender();
     scheduleAutosave();
   });
-  els.editor.addEventListener('click', updateStatus);
-  els.editor.addEventListener('keyup', updateStatus);
+  els.editor.addEventListener('click', () => { updateStatus(); notifyEditorChanged(); });
+  els.editor.addEventListener('keyup', () => { updateStatus(); notifyEditorChanged(); });
   els.editor.addEventListener('scroll', () => syncScroll(els.editor, $('preview-pane')));
   $('preview-pane').addEventListener('scroll', () => syncScroll($('preview-pane'), els.editor));
 
@@ -518,6 +631,8 @@
   document.querySelectorAll('.mode-btn').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
   $('btn-zoom-in').addEventListener('click', () => api.setSettings({ zoom: Math.min(3, Math.round((settings.zoom + 0.1) * 10) / 10) }));
   $('btn-zoom-out').addEventListener('click', () => api.setSettings({ zoom: Math.max(0.5, Math.round((settings.zoom - 0.1) * 10) / 10) }));
+  $('btn-toggle-tree').addEventListener('click', () => togglePanel('fileTreeOpen'));
+  $('btn-toggle-agent').addEventListener('click', () => togglePanel('agentPanelOpen'));
 
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.key === 'Tab') {
@@ -540,11 +655,28 @@
       case 'close-tab': if (d) await closeTab(d.id); break;
       case 'mode': setMode(payload); break;
       case 'reveal': if (d) await api.reveal(d.filePath); break;
+      case 'add-project': window.MeReaderTree.addProject(); break;
+      case 'toggle-panel': break; // 开关状态由 settings:changed 统一落地，避免两处改 DOM
+      case 'agent-help': showAgentHelp(); break;
     }
   });
   api.on('file:open-path', openPath);
   api.on('settings:changed', applySettings);
   api.on('window:before-close', handleBeforeClose);
+  api.on('project:added', () => window.MeReaderTree.refresh());
+
+  async function showAgentHelp() {
+    await window.MRUI.showAlert({
+      title: 'Ollab 使用说明',
+      message: [
+        '1. 先在「设置 → 本地服务端」确认 Ollama 已启动（默认 http://127.0.0.1:11434），并选好对话模型；需要向量检索再选一个 embedding 模型。',
+        '2. 左侧添加项目文件夹，agent 的所有读写都被限制在该目录内；隐藏的 .omemory / .oskill / .orag 分别是项目记忆、项目技能与向量索引。',
+        '3. 右侧面板「需要确认 / 自动审批」控制写类工具是否逐项询问；删除类操作任何时候都会询问。',
+        '4. 上下文接近水位会自动压缩：原始记录只追加，压缩只影响发给模型的视图，可随时手动压缩或从这里重来。',
+        '5. 图片可直接粘贴或点 🖼 上传，视觉模型会收到像素，非视觉模型只收到文件名说明。'
+      ].join('\n')
+    });
+  }
 
   // ---------- 启动 ----------
 
@@ -552,10 +684,21 @@
     const s = await api.getState();
     applySettings(s.settings);
 
+    if (s.initialProject && window.MeReaderTree) {
+      try {
+        await window.MeReaderTree.addPathAsProject(s.initialProject);
+      } catch (err) {
+        window.MRUI.fail(err, '打开项目失败');
+      }
+    }
+
     if (s.recovery) await restoreSession(s.recovery);
     if (s.initialFile) await openPath(s.initialFile);
     if (!docs.length) newDoc({ text: '', saved: '' });
     if (!docs.find((d) => d.id === activeId)) activeId = docs[0].id;
     loadEditor();
+
+    // 面板最后启动：它依赖 settings 落好的布局状态与当前项目
+    if (window.MeReaderAgent) window.MeReaderAgent.boot(s.agent);
   })();
 })();
